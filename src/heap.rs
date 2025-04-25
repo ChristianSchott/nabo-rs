@@ -1,3 +1,5 @@
+use core::iter;
+
 use alloc::collections::BinaryHeap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -14,6 +16,10 @@ pub(crate) trait CandidateHeap<T: Scalar> {
     fn furthest_dist2(&self) -> NotNan<T>;
     fn into_vec(self) -> Vec<InternalNeighbour<T>>;
     fn into_sorted_vec(self) -> Vec<InternalNeighbour<T>>;
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a InternalNeighbour<T>>
+    where
+        T: 'a;
 }
 
 impl<T: Scalar> CandidateHeap<T> for BinaryHeap<InternalNeighbour<T>> {
@@ -44,6 +50,13 @@ impl<T: Scalar> CandidateHeap<T> for BinaryHeap<InternalNeighbour<T>> {
     }
     fn into_sorted_vec(self) -> Vec<InternalNeighbour<T>> {
         BinaryHeap::into_sorted_vec(self)
+    }
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a InternalNeighbour<T>>
+    where
+        T: 'a,
+    {
+        BinaryHeap::iter(&self)
     }
 }
 
@@ -94,6 +107,13 @@ impl<T: Scalar> CandidateHeap<T> for Vec<InternalNeighbour<T>> {
     fn into_sorted_vec(self) -> Vec<InternalNeighbour<T>> {
         keep_finite_elements(self)
     }
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a InternalNeighbour<T>>
+    where
+        T: 'a,
+    {
+        self.as_slice().iter()
+    }
 }
 
 impl<T: Scalar> CandidateHeap<T> for InternalNeighbour<T> {
@@ -118,6 +138,13 @@ impl<T: Scalar> CandidateHeap<T> for InternalNeighbour<T> {
     }
     fn into_sorted_vec(self) -> Vec<InternalNeighbour<T>> {
         vec![self]
+    }
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a InternalNeighbour<T>>
+    where
+        T: 'a,
+    {
+        iter::once(self)
     }
 }
 

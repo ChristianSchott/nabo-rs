@@ -268,6 +268,34 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
         )
     }
 
+    /// LOL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if .
+    pub fn prepare(
+        &self,
+        candidate_container: CandidateContainer,
+        parameters: &Parameters<T>,
+    ) -> PreparedQuery<'_, T, P, BinaryHeap<InternalNeighbour<T>>> {
+        let Parameters {
+            epsilon,
+            max_radius,
+            allow_self_match,
+            sort_results: _, // FIXME: sorting is ignored here currently
+        } = *parameters;
+        let max_error = epsilon + T::from(1).unwrap();
+        PreparedQuery::new(
+            self,
+            InternalParameters {
+                max_error2: NotNan::new(max_error * max_error).unwrap(),
+                max_radius2: NotNan::new(max_radius * max_radius).unwrap(),
+                allow_self_match,
+            },
+            BinaryHeap::new_with_k(32),
+        )
+    }
+
     fn knn_generic_heap<H: CandidateHeap<T>>(
         &self,
         k: u32,
@@ -527,6 +555,48 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
             .as_slice()
             .chunks(P::DIM as usize)
             .map(P::from_slice)
+    }
+}
+
+pub struct PreparedQuery<'t, T: Scalar, P: Point<T>, H: CandidateHeap<T>> {
+    tree: &'t KDTree<T, P>,
+    params: InternalParameters<T>,
+    buffer: Vec<NotNan<T>>,
+    heap: H,
+    results: Vec<Neighbour<T, P>>,
+}
+
+impl<'t, T: Scalar, P: Point<T>, H: CandidateHeap<T>> PreparedQuery<'t, T, P, H> {
+    fn new(tree: &'t KDTree<T, P>, params: InternalParameters<T>, heap: H) -> Self {
+        Self {
+            tree,
+            params,
+            buffer: vec![NotNan::<T>::zero(); (P::DIM * 2) as usize],
+            heap,
+            results: vec![],
+        }
+    }
+
+    pub fn query<'q>(&'q mut self, p: &P) -> &'q [Neighbour<T, P>] {
+        let (query, off) = self.buffer.split_at_mut(P::DIM as usize);
+        for i in 0..P::DIM {
+            query[i as usize] = p.get(i);
+        }
+        self.tree.recurse_knn(
+            query,
+            0,
+            NotNan::<T>::zero(),
+            &mut self.heap,
+            off,
+            &self.params,
+        );
+        self.results.clear();
+        self.results.extend(
+            self.heap
+                .iter()
+                .map(|internal| self.tree.externalise_neighbour(*internal)),
+        );
+        &self.results
     }
 }
 
