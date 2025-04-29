@@ -64,6 +64,10 @@ pub use ordered_float::{FloatIsNan, NotNan};
 use heap::CandidateHeap;
 use internal_neighbour::InternalNeighbour;
 
+pub use heap::BoundedCollector;
+pub use heap::CandidateCollector;
+pub use heap::UnboundedCollector;
+
 /// The scalar type for points in the space to be searched
 pub trait Scalar: FloatCore + AddAssign + core::fmt::Debug {}
 impl<T: FloatCore + AddAssign + core::fmt::Debug> Scalar for T {}
@@ -268,35 +272,24 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
         )
     }
 
-    /// LOL.
-    ///
-    /// # Panics
-    ///
-    /// Panics if .
-    pub fn prepare(
+    /// Finds the nearest neighbours of `query`, with user-provided parameters.
+    pub fn nn_raw<H: CandidateCollector<T>>(
         &self,
-        candidate_container: CandidateContainer,
+        query: &P,
+        collector: &mut H,
         parameters: &Parameters<T>,
-    ) -> PreparedQuery<'_, T, P, BinaryHeap<InternalNeighbour<T>>> {
-        let Parameters {
-            epsilon,
-            max_radius,
-            allow_self_match,
-            sort_results: _, // FIXME: sorting is ignored here currently
-        } = *parameters;
-        let max_error = epsilon + T::from(1).unwrap();
-        PreparedQuery::new(
-            self,
-            InternalParameters {
-                max_error2: NotNan::new(max_error * max_error).unwrap(),
-                max_radius2: NotNan::new(max_radius * max_radius).unwrap(),
-                allow_self_match,
-            },
-            BinaryHeap::new_with_k(32),
-        )
+        touch_statistics: Option<&mut u32>,
+    ) {
+        let query_as_vec: Vec<_> = (0..P::DIM).map(|i| query.get(i)).collect();
+        self.knn_internal(
+            collector,
+            &query_as_vec,
+            &parameters.into(),
+            touch_statistics,
+        );
     }
 
-    fn knn_generic_heap<H: CandidateHeap<T>>(
+    fn knn_generic_heap<H: CandidateHeap<T> + CandidateCollector<T>>(
         &self,
         k: u32,
         query: &P,
@@ -304,56 +297,46 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
         touch_statistics: Option<&mut u32>,
     ) -> Vec<Neighbour<T, P>> {
         let query_as_vec: Vec<_> = (0..P::DIM).map(|i| query.get(i)).collect();
-        let Parameters {
-            epsilon,
-            max_radius,
-            allow_self_match,
-            sort_results,
-        } = *parameters;
-        let max_error = epsilon + T::from(1).unwrap();
-        let max_error2 = NotNan::new(max_error * max_error).unwrap();
-        let max_radius2 = NotNan::new(max_radius * max_radius).unwrap();
-        #[cfg_attr(rustfmt, rustfmt_skip)]
+        let mut heap = H::new_with_k(k);
         self.knn_internal::<H>(
-            k, &query_as_vec,
-            &InternalParameters { max_error2, max_radius2, allow_self_match },
-            sort_results, touch_statistics,
-        )
-            .into_iter()
-            .map(|n| self.externalise_neighbour(n))
-            .collect()
+            &mut heap,
+            &query_as_vec,
+            &parameters.into(),
+            touch_statistics,
+        );
+        if parameters.sort_results {
+            heap.into_sorted_vec()
+        } else {
+            heap.into_vec()
+        }
+        .into_iter()
+        .map(|n| self.externalise_neighbour(n))
+        .collect()
     }
 
-    fn knn_internal<H: CandidateHeap<T>>(
+    fn knn_internal<H: CandidateCollector<T>>(
         &self,
-        k: u32,
+        heap: &mut H,
         query: &[NotNan<T>],
         internal_parameters: &InternalParameters<T>,
-        sort_results: bool,
         touch_statistics: Option<&mut u32>,
-    ) -> Vec<InternalNeighbour<T>> {
+    ) {
         // TODO Const generics: once available, remove `vec!` below.
         let mut off = vec![NotNan::<T>::zero(); P::DIM as usize];
-        let mut heap = H::new_with_k(k);
         #[cfg_attr(rustfmt, rustfmt_skip)]
         let leaf_touched_count = self.recurse_knn(
             query,
             0, NotNan::<T>::zero(),
-            &mut heap, &mut off,
+            heap, &mut off,
             internal_parameters,
         );
         if let Some(touch_statistics) = touch_statistics {
             *touch_statistics = leaf_touched_count;
         }
-        if sort_results {
-            heap.into_sorted_vec()
-        } else {
-            heap.into_vec()
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn recurse_knn<H: CandidateHeap<T>>(
+    fn recurse_knn<H: CandidateCollector<T>>(
         &self,
         query: &[NotNan<T>],
         node: usize,
@@ -528,6 +511,7 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
             .0 as u32
     }
 
+    /// Externalize local neighbour
     fn externalise_neighbour(&self, neighbour: InternalNeighbour<T>) -> Neighbour<T, P> {
         let mut point = P::default();
         let base_index = neighbour.index * P::DIM;
@@ -539,6 +523,11 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
             dist2: neighbour.dist2,
             index: self.indices[neighbour.index as usize],
         }
+    }
+
+    /// Externalize local neighbour-index
+    fn externalise_index(&self, index: u32) -> u32 {
+        self.indices[index as usize]
     }
 
     /// Iterate over the indices and points in this KDTree.
@@ -555,48 +544,6 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
             .as_slice()
             .chunks(P::DIM as usize)
             .map(P::from_slice)
-    }
-}
-
-pub struct PreparedQuery<'t, T: Scalar, P: Point<T>, H: CandidateHeap<T>> {
-    tree: &'t KDTree<T, P>,
-    params: InternalParameters<T>,
-    buffer: Vec<NotNan<T>>,
-    heap: H,
-    results: Vec<Neighbour<T, P>>,
-}
-
-impl<'t, T: Scalar, P: Point<T>, H: CandidateHeap<T>> PreparedQuery<'t, T, P, H> {
-    fn new(tree: &'t KDTree<T, P>, params: InternalParameters<T>, heap: H) -> Self {
-        Self {
-            tree,
-            params,
-            buffer: vec![NotNan::<T>::zero(); (P::DIM * 2) as usize],
-            heap,
-            results: vec![],
-        }
-    }
-
-    pub fn query<'q>(&'q mut self, p: &P) -> &'q [Neighbour<T, P>] {
-        let (query, off) = self.buffer.split_at_mut(P::DIM as usize);
-        for i in 0..P::DIM {
-            query[i as usize] = p.get(i);
-        }
-        self.tree.recurse_knn(
-            query,
-            0,
-            NotNan::<T>::zero(),
-            &mut self.heap,
-            off,
-            &self.params,
-        );
-        self.results.clear();
-        self.results.extend(
-            self.heap
-                .iter()
-                .map(|internal| self.tree.externalise_neighbour(*internal)),
-        );
-        &self.results
     }
 }
 
@@ -641,7 +588,7 @@ mod tests {
         }
     }
 
-    fn brute_force_knn<H: CandidateHeap<f32>>(
+    fn brute_force_knn<H: CandidateHeap<f32> + CandidateCollector<f32>>(
         cloud: &[P2],
         query: &P2,
         k: u32,

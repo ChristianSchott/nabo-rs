@@ -5,7 +5,7 @@ use crate::infinite::HasInfinite;
 
 /// An internal representation of neighbour, to avoid copying the point around
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct InternalNeighbour<T: FloatCore> {
+pub struct InternalNeighbour<T: FloatCore> {
     /// the index of this point
     pub(crate) index: u32,
     /// the distance to the point
