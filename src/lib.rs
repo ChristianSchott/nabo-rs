@@ -62,11 +62,11 @@ use ordered_float::FloatCore;
 pub use ordered_float::{FloatIsNan, NotNan};
 
 use heap::CandidateHeap;
-use internal_neighbour::InternalNeighbour;
 
 pub use heap::BoundedCollector;
 pub use heap::CandidateCollector;
 pub use heap::UnboundedCollector;
+pub use internal_neighbour::InternalNeighbour;
 
 /// The scalar type for points in the space to be searched
 pub trait Scalar: FloatCore + AddAssign + core::fmt::Debug {}
@@ -512,7 +512,7 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
     }
 
     /// Externalize local neighbour
-    fn externalise_neighbour(&self, neighbour: InternalNeighbour<T>) -> Neighbour<T, P> {
+    pub fn externalise_neighbour(&self, neighbour: InternalNeighbour<T>) -> Neighbour<T, P> {
         let mut point = P::default();
         let base_index = neighbour.index * P::DIM;
         for i in 0..P::DIM {
@@ -526,7 +526,7 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
     }
 
     /// Externalize local neighbour-index
-    fn externalise_index(&self, index: u32) -> u32 {
+    pub fn externalise_index(&self, index: u32) -> u32 {
         self.indices[index as usize]
     }
 
