@@ -1,4 +1,4 @@
-#![no_std]
+// #![no_std]
 #![warn(missing_docs)]
 
 //! A fast K Nearest Neighbour library for low-dimensional spaces.
@@ -496,6 +496,8 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
 
                 // add this split
                 self.nodes.push(Node::new_split_node(split_dim, split_val));
+
+                println!("l; {};\t r: {}", left_points.len(), right_points.len());
 
                 // recurse
                 ranges.push((right_points, Branch::Right(pos)));
