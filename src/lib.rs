@@ -472,12 +472,17 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
                 // split along this dimension
                 let split_val =
                     (max_bounds[split_dim_u] + min_bounds[split_dim_u]) * T::from(0.5).unwrap();
-                let range = max_bounds[split_dim_u] - min_bounds[split_dim_u];
                 let (left_points, right_points) = {
+                    let range = max_bounds[split_dim_u] - min_bounds[split_dim_u];
                     let mid = if range == T::from(0).unwrap() {
                         // degenerate data, split in half and iterate
-                        (build_points_range.start + build_points_range.end) / 2
+                        build_points_range.start
+                            + (build_points_range.start + build_points_range.end) / 2
                     } else {
+                        // build_points[build_points_range.clone()].sort_unstable_by(|a, b| {
+                        //     cloud[*a].get(split_dim).cmp(&cloud[*b].get(split_dim))
+                        // });
+
                         // partition data around split_val on split_dim
                         partition::partition_index(
                             &mut build_points[build_points_range.clone()],
