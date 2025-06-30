@@ -470,34 +470,40 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
                 let split_dim_u = split_dim as usize;
 
                 // split along this dimension
-                let split_val =
-                    (max_bounds[split_dim_u] + min_bounds[split_dim_u]) * T::from(0.5).unwrap();
+                // let split_val =
+                //     (max_bounds[split_dim_u] + min_bounds[split_dim_u]) * T::from(0.5).unwrap();
                 let (left_points, right_points) = {
-                    let range = max_bounds[split_dim_u] - min_bounds[split_dim_u];
-                    let mid = if range == T::from(0).unwrap() {
+                    let mid = (build_points_range.start + build_points_range.end) / 2;
+                    let (mid, split_val) = if max_bounds[split_dim_u] == min_bounds[split_dim_u] {
                         // degenerate data, split in half and iterate
-                        build_points_range.start
-                            + (build_points_range.start + build_points_range.end) / 2
+                        (mid, min_bounds[split_dim_u])
+                        // (build_points_range.start + build_points_range.end) / 2
                     } else {
-                        // build_points[build_points_range.clone()].sort_unstable_by(|a, b| {
-                        //     cloud[*a].get(split_dim).cmp(&cloud[*b].get(split_dim))
-                        // });
+                        build_points[build_points_range.clone()].sort_unstable_by(|a, b| {
+                            cloud[*a].get(split_dim).cmp(&cloud[*b].get(split_dim))
+                        });
+
+                        let split_val = cloud[build_points[mid]].get(split_dim);
 
                         // partition data around split_val on split_dim
-                        partition::partition_index(
-                            &mut build_points[build_points_range.clone()],
-                            |index| cloud[*index].get(split_dim) < split_val,
-                        ) + build_points_range.start
+                        (
+                            partition::partition_index(
+                                &mut build_points[build_points_range.clone()],
+                                |index| cloud[*index].get(split_dim) <= split_val,
+                            ) + build_points_range.start,
+                            split_val,
+                        )
                     };
+                    self.nodes.push(Node::new_split_node(split_dim, split_val));
                     (build_points_range.start..mid, mid..build_points_range.end)
                 };
                 debug_assert_ne!(left_points.len(), 0);
                 debug_assert_ne!(right_points.len(), 0);
 
                 // add this split
-                self.nodes.push(Node::new_split_node(split_dim, split_val));
+                // self.nodes.push(Node::new_split_node(split_dim, split_val));
 
-                println!("l; {};\t r: {}", left_points.len(), right_points.len());
+                // println!("l; {};\t r: {}", left_points.len(), right_points.len());
 
                 // recurse
                 ranges.push((right_points, Branch::Right(pos)));
