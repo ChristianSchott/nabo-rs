@@ -55,6 +55,7 @@ pub mod simple_point;
 
 use alloc::{collections::BinaryHeap, vec, vec::Vec};
 use core::ops::AddAssign;
+use core::ops::Range;
 use internal_parameters::InternalParameters;
 use node::Node;
 use num_traits::{clamp_max, clamp_min, Bounded, Zero};
@@ -205,9 +206,6 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
             panic!("Point cloud has a risk to have more nodes {} than the kd-tree allows {}. The kd-tree has {} bits for dimensions and {} bits for node indices", estimated_node_count, P::MAX_NODE_COUNT, P::DIM_BIT_COUNT, 32 - P::DIM_BIT_COUNT);
         }
 
-        // build point vector and compute bounds
-        let mut build_points: Vec<_> = (0..cloud.len()).collect();
-
         // create and populate tree
         let mut tree = KDTree {
             bucket_size,
@@ -215,7 +213,7 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
             points: Vec::with_capacity(cloud.len() * P::DIM as usize),
             indices: Vec::with_capacity(cloud.len()),
         };
-        tree.build_nodes(cloud, &mut build_points);
+        tree.build_nodes(cloud);
         tree
     }
 
@@ -428,60 +426,77 @@ impl<T: Scalar, P: Point<T>> KDTree<T, P> {
         )
     }
 
-    fn build_nodes(&mut self, cloud: &[P], build_points: &mut [usize]) -> usize {
-        let count = build_points.len() as u32;
-        let pos = self.nodes.len();
-
-        // if remaining points fit in a single bucket, add a node and this bucket
-        if count <= self.bucket_size {
-            let bucket_start_index = self.indices.len() as u32;
-            self.points.reserve(build_points.len() * P::DIM as usize);
-            self.indices.reserve(build_points.len());
-            for point_index in build_points {
-                let point_index = *point_index;
-                self.indices.push(point_index as u32);
-                for i in 0..P::DIM {
-                    self.points.push(cloud[point_index].get(i));
-                }
-            }
-            self.nodes
-                .push(Node::new_leaf_node(bucket_start_index, count));
-            return pos;
+    fn build_nodes(&mut self, cloud: &[P]) {
+        // build point vector and compute bounds
+        let mut build_points: Vec<_> = (0..cloud.len()).collect();
+        enum Branch {
+            Root,
+            Left(usize),
+            Right(usize),
         }
+        let mut ranges: Vec<_> = vec![(0..cloud.len(), Branch::Root)];
 
-        // compute bounds
-        let (min_bounds, max_bounds) = Self::get_build_points_bounds(cloud, build_points);
+        while let Some((build_points_range, parent_branch)) = ranges.pop() {
+            let count = build_points_range.len() as u32;
+            let pos = self.nodes.len();
 
-        // find the largest dimension of the box
-        let split_dim = Self::max_delta_index(&min_bounds, &max_bounds);
-        let split_dim_u = split_dim as usize;
+            match parent_branch {
+                Branch::Root => (),
+                Branch::Left(parent) => debug_assert_eq!(pos, parent + 1),
+                Branch::Right(parent) => self.nodes[parent].set_child_index(pos as u32), // write the right child index of the parent node
+            }
 
-        // split along this dimension
-        let split_val = (max_bounds[split_dim_u] + min_bounds[split_dim_u]) * T::from(0.5).unwrap();
-        let range = max_bounds[split_dim_u] - min_bounds[split_dim_u];
-        let (left_points, right_points) = if range == T::from(0).unwrap() {
-            // degenerate data, split in half and iterate
-            build_points.split_at_mut(build_points.len() / 2)
-        } else {
-            // partition data around split_val on split_dim
-            partition::partition(build_points, |index| {
-                cloud[*index].get(split_dim) < split_val
-            })
-        };
-        debug_assert_ne!(left_points.len(), 0);
-        debug_assert_ne!(right_points.len(), 0);
+            // if remaining points fit in a single bucket, add a node and this bucket
+            if count <= self.bucket_size {
+                let bucket_start_index = self.indices.len() as u32;
+                self.points.reserve(build_points.len() * P::DIM as usize);
+                self.indices.reserve(build_points.len());
+                for point_index in &build_points[build_points_range] {
+                    let point_index = *point_index;
+                    self.indices.push(point_index as u32);
+                    for i in 0..P::DIM {
+                        self.points.push(cloud[point_index].get(i));
+                    }
+                }
+                self.nodes
+                    .push(Node::new_leaf_node(bucket_start_index, count));
+            } else {
+                // compute bounds
+                let (min_bounds, max_bounds) =
+                    Self::get_build_points_bounds(cloud, &build_points[build_points_range.clone()]);
 
-        // add this split
-        self.nodes.push(Node::new_split_node(split_dim, split_val));
+                // find the largest dimension of the box
+                let split_dim = Self::max_delta_index(&min_bounds, &max_bounds);
+                let split_dim_u = split_dim as usize;
 
-        // recurse
-        let left_child = self.build_nodes(cloud, left_points);
-        debug_assert_eq!(left_child, pos + 1);
-        let right_child = self.build_nodes(cloud, right_points);
+                // split along this dimension
+                let split_val =
+                    (max_bounds[split_dim_u] + min_bounds[split_dim_u]) * T::from(0.5).unwrap();
+                let range = max_bounds[split_dim_u] - min_bounds[split_dim_u];
+                let (left_points, right_points) = {
+                    let mid = if range == T::from(0).unwrap() {
+                        // degenerate data, split in half and iterate
+                        (build_points_range.start + build_points_range.end) / 2
+                    } else {
+                        // partition data around split_val on split_dim
+                        partition::partition_index(
+                            &mut build_points[build_points_range.clone()],
+                            |index| cloud[*index].get(split_dim) < split_val,
+                        ) + build_points_range.start
+                    };
+                    (build_points_range.start..mid, mid..build_points_range.end)
+                };
+                debug_assert_ne!(left_points.len(), 0);
+                debug_assert_ne!(right_points.len(), 0);
 
-        // write right child index and return
-        self.nodes[pos].set_child_index(right_child as u32);
-        pos
+                // add this split
+                self.nodes.push(Node::new_split_node(split_dim, split_val));
+
+                // recurse
+                ranges.push((right_points, Branch::Right(pos)));
+                ranges.push((left_points, Branch::Left(pos))); // left side should be processed first -> has to be on top of the stack
+            }
+        }
     }
 
     fn get_build_points_bounds(
